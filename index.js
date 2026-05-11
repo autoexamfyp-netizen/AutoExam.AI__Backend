@@ -29,6 +29,9 @@ const aiRoutes = require("./routes/aiRoutes")
 const questionsRoutes = require("./routes/questionsRoutes")
 const examsRoutes = require("./routes/examsRoutes")
 const dashboardRoutes = require("./routes/dashboardRoutes")
+const publishedExamsRoutes = require("./routes/publishedExamsRoutes")
+const studentExamRoutes = require("./routes/studentExamRoutes")
+const submissionsRoutes = require("./routes/submissionsRoutes")
 
 const app = express()
 
@@ -59,6 +62,9 @@ app.use("/api/ai", aiRoutes)
 app.use("/api/questions", questionsRoutes)
 app.use("/api/exams", examsRoutes)
 app.use("/api/dashboard", dashboardRoutes)
+app.use("/api/published-exams", publishedExamsRoutes)
+app.use("/api/student", studentExamRoutes)
+app.use("/api/submissions", submissionsRoutes)
 
 // Catch-all error handler
 app.use((err, _req, res, _next) => {

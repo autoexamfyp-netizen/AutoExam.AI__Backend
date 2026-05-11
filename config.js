@@ -20,7 +20,10 @@ const config = {
   },
   gemini: {
     apiKey: required("GEMINI_API_KEY"),
-    model: process.env.GEMINI_MODEL || "gemini-1.5-flash",
+    // Default model — `gemini-flash-latest` is the current public alias for the
+    // Flash family on v1beta. The service auto-falls back to a few well-known
+    // aliases if Google retires/renames a model.
+    model: process.env.GEMINI_MODEL || "gemini-flash-latest",
   },
 }
 

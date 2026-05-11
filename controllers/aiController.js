@@ -100,8 +100,9 @@ async function generateExam(req, res) {
       title = "AI-composed exam",
       description = "",
       categoryId = null,
+      sourceMaterialId = null,
       durationMinutes = 60,
-      mode = "from-bank", // 'from-bank' | 'from-content'
+      mode = "from-bank", // 'from-bank' | 'from-content' | 'from-material'
       content,
       examConfig = {},
       sourceQuestionIds = null,
@@ -116,15 +117,42 @@ async function generateExam(req, res) {
     }
 
     let questionRows = []
+    let resolvedSourceMaterialId = sourceMaterialId
+    let resolvedContent = content
+    let resolvedTitle = title
+    let resolvedCategoryId = categoryId
+    let resolvedCategoryTitle = examConfig.categoryTitle
 
-    if (mode === "from-content") {
-      if (!content || content.trim().length < 30) {
-        return res.status(400).json({ error: "Content is required for 'from-content' mode." })
+    // If the teacher picked a saved text material, hydrate its content and
+    // category server-side so the FE doesn't need to re-send it.
+    if ((mode === "from-content" || mode === "from-material") && sourceMaterialId) {
+      const matRes = await req.supabase
+        .from("text_materials")
+        .select("id, title, content, category_id, category:categories(id,title)")
+        .eq("id", sourceMaterialId)
+        .single()
+      if (matRes.error || !matRes.data) {
+        return res.status(404).json({ error: "Selected content not found." })
+      }
+      resolvedContent = matRes.data.content || ""
+      resolvedSourceMaterialId = matRes.data.id
+      if (!resolvedCategoryId) resolvedCategoryId = matRes.data.category_id
+      if (!resolvedCategoryTitle) resolvedCategoryTitle = matRes.data.category?.title
+      if (!resolvedTitle || resolvedTitle === "AI-composed exam") {
+        resolvedTitle = `${matRes.data.title || "Untitled"} — Exam`
+      }
+    }
+
+    const fromContentMode = mode === "from-content" || mode === "from-material"
+
+    if (fromContentMode) {
+      if (!resolvedContent || resolvedContent.trim().length < 30) {
+        return res.status(400).json({ error: "Source content must be at least 30 characters." })
       }
       const prompt = buildQuestionPrompt({
-        content,
-        title,
-        categoryTitle: examConfig.categoryTitle,
+        content: resolvedContent,
+        title: resolvedTitle,
+        categoryTitle: resolvedCategoryTitle,
         config: {
           mcq: cfg.targetMcq,
           short: cfg.targetShort,
@@ -144,7 +172,8 @@ async function generateExam(req, res) {
       const rows = questions.map((q) => ({
         ...q,
         created_by: req.user.id,
-        category_id: categoryId || null,
+        category_id: resolvedCategoryId || null,
+        text_material_id: resolvedSourceMaterialId || null,
       }))
       const ins = await req.supabase.from("question_bank").insert(rows).select("*")
       if (ins.error) {
@@ -159,7 +188,7 @@ async function generateExam(req, res) {
         .select("id, prompt, question_type, difficulty, marks, topic, options, model_answer")
         .order("created_at", { ascending: false })
         .limit(120)
-      if (categoryId) q = q.eq("category_id", categoryId)
+      if (resolvedCategoryId) q = q.eq("category_id", resolvedCategoryId)
       if (Array.isArray(sourceQuestionIds) && sourceQuestionIds.length) {
         q = q.in("id", sourceQuestionIds)
       }
@@ -207,15 +236,27 @@ async function generateExam(req, res) {
 
     const totalMarks = questionRows.reduce((sum, r) => sum + (Number(r.marks) || 0), 0)
 
+    // Compute representative difficulty (most common in the chosen set).
+    const diffCounts = {}
+    for (const r of questionRows) {
+      const k = r.difficulty || "medium"
+      diffCounts[k] = (diffCounts[k] || 0) + 1
+    }
+    const sortedDiffs = Object.entries(diffCounts).sort((a, b) => b[1] - a[1])
+    const distinct = Object.keys(diffCounts).length
+    const representativeDifficulty = distinct > 1 ? "mixed" : sortedDiffs[0]?.[0] || "medium"
+
     const ins = await req.supabase
       .from("exams")
       .insert({
         created_by: req.user.id,
-        category_id: categoryId || null,
-        title,
+        category_id: resolvedCategoryId || null,
+        source_material_id: resolvedSourceMaterialId || null,
+        title: resolvedTitle,
         description: description || null,
         duration_minutes: Number(durationMinutes) || 60,
         total_marks: totalMarks,
+        difficulty: representativeDifficulty,
         status: "draft",
       })
       .select("*")
