@@ -45,7 +45,7 @@ async function getSubmission(req, res) {
 
     const ansRes = await req.supabase
       .from("submission_answers")
-      .select("*, question:question_bank(id,prompt,question_type,options,model_answer,marks)")
+      .select("*, question:question_bank(id,prompt,question_type,topic,difficulty,options,model_answer,marks)")
       .eq("submission_id", id)
     if (ansRes.error) return res.status(500).json({ error: ansRes.error.message })
 

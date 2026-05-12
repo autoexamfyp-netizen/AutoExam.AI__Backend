@@ -9,7 +9,7 @@
  * Tip:
  *   - Get an API key at https://aistudio.google.com/app/apikey
  *   - Set GEMINI_API_KEY in Backend/.env
- *   - Default model is gemini-1.5-flash; override with GEMINI_MODEL.
+ *   - Default model is gemini-flash-latest; override with GEMINI_MODEL.
  */
 
 const config = require("../config")
@@ -20,14 +20,14 @@ const ENDPOINT = (model) =>
 /**
  * Fallback chain used when a 404 says the requested model alias has been
  * retired or renamed. We try the configured model first, then sweep the
- * well-known stable aliases for the Flash family.
+ * current well-known stable aliases. The Gemini 1.5 family is retired and
+ * intentionally left out.
  */
 const FLASH_FALLBACKS = [
   "gemini-flash-latest",
   "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
   "gemini-2.0-flash",
-  "gemini-1.5-flash-latest",
-  "gemini-1.5-flash",
 ]
 
 let resolvedModel = null // cached after the first successful call
@@ -82,6 +82,7 @@ async function callGemini(prompt, opts = {}) {
     ],
   }
 
+  const attempts = []
   let lastError
   for (const model of chain) {
     const url = `${ENDPOINT(model)}?key=${encodeURIComponent(config.gemini.apiKey)}`
@@ -97,15 +98,22 @@ async function callGemini(prompt, opts = {}) {
         const isModelMissing =
           res.status === 404 ||
           /is not found|not supported|model.*not.*available/i.test(errBody)
+        // 403 = key lacks access to this model (region/billing/restriction) — try another.
+        const isRetryable = isModelMissing || res.status === 403 || res.status === 429 || res.status >= 500
 
-        if (isModelMissing && chain.length > 1) {
+        attempts.push({ model, status: res.status, snippet: errBody.slice(0, 160) })
+
+        if (isRetryable && chain.indexOf(model) < chain.length - 1) {
           console.warn(`⚠️ Model ${model} unavailable (${res.status}), trying next fallback...`)
           lastError = new Error(`${res.status}: ${errBody.slice(0, 200)}`)
+          // Invalidate any cached choice so the next call re-walks the chain.
+          if (resolvedModel === model) resolvedModel = null
           continue
         }
 
-        console.error("❌ Gemini API Error:", res.status, errBody.slice(0, 500))
-        throw new Error(`Gemini API ${res.status}: ${errBody.slice(0, 200)}`)
+        console.error("❌ Gemini API Error:", res.status, errBody.slice(0, 500), { attempts })
+        const tried = attempts.map((a) => `${a.model}(${a.status})`).join(", ")
+        throw new Error(`Gemini API ${res.status}: ${errBody.slice(0, 200)} [tried: ${tried}]`)
       }
 
       const data = await res.json()
@@ -121,12 +129,17 @@ async function callGemini(prompt, opts = {}) {
     } catch (err) {
       lastError = err
       // Network errors fall through to the next model only if there is one.
-      if (chain.indexOf(model) === chain.length - 1) throw err
+      if (chain.indexOf(model) === chain.length - 1) {
+        const tried = attempts.map((a) => `${a.model}(${a.status})`).join(", ") || "n/a"
+        const msg = `${err?.message || "Gemini call failed"} [tried: ${tried}]`
+        throw new Error(msg)
+      }
       console.warn(`⚠️ Model ${model} failed, trying next fallback...`, err?.message)
     }
   }
 
-  throw lastError || new Error("Gemini API: no model available")
+  const tried = attempts.map((a) => `${a.model}(${a.status})`).join(", ") || "n/a"
+  throw lastError || new Error(`Gemini API: no model available [tried: ${tried}]`)
 }
 
 /**
