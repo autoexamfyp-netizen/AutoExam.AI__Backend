@@ -95,13 +95,32 @@ async function callGemini(prompt, opts = {}) {
 
       if (!res.ok) {
         const errBody = await res.text()
+        const isLeakedKey =
+          res.status === 403 && /api key was reported as leaked|reported as leaked/i.test(errBody)
+        const isInvalidKey =
+          (res.status === 400 || res.status === 403) &&
+          /api key not valid|invalid api key|key not valid/i.test(errBody)
         const isModelMissing =
           res.status === 404 ||
           /is not found|not supported|model.*not.*available/i.test(errBody)
-        // 403 = key lacks access to this model (region/billing/restriction) — try another.
-        const isRetryable = isModelMissing || res.status === 403 || res.status === 429 || res.status >= 500
+        // Some 403s are model/access specific, but leaked/invalid keys will fail for every model.
+        const isRetryable =
+          !isLeakedKey &&
+          !isInvalidKey &&
+          (isModelMissing || res.status === 403 || res.status === 429 || res.status >= 500)
 
         attempts.push({ model, status: res.status, snippet: errBody.slice(0, 160) })
+
+        if (isLeakedKey || isInvalidKey) {
+          console.error("❌ Gemini API key rejected:", errBody.slice(0, 500), { attempts })
+          const err = new Error(
+            isLeakedKey
+              ? "Gemini API key was reported as leaked. Create a new key in Google AI Studio, replace GEMINI_API_KEY in Backend/.env, and restart the backend."
+              : "Gemini API key is invalid. Replace GEMINI_API_KEY in Backend/.env and restart the backend.",
+          )
+          err.geminiNonRetryable = true
+          throw err
+        }
 
         if (isRetryable && chain.indexOf(model) < chain.length - 1) {
           console.warn(`⚠️ Model ${model} unavailable (${res.status}), trying next fallback...`)
@@ -128,6 +147,7 @@ async function callGemini(prompt, opts = {}) {
       return { text, raw: data, model }
     } catch (err) {
       lastError = err
+      if (err?.geminiNonRetryable) throw err
       // Network errors fall through to the next model only if there is one.
       if (chain.indexOf(model) === chain.length - 1) {
         const tried = attempts.map((a) => `${a.model}(${a.status})`).join(", ") || "n/a"

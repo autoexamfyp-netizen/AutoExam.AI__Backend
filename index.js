@@ -49,6 +49,16 @@ app.use(
 )
 app.use(express.json({ limit: "1mb" }))
 
+// API responses are user-specific and frequently change. Disable HTTP caching
+// to avoid Chromium's `net::ERR_CACHE_READ_FAILURE` (a corrupt disk-cache
+// entry returning an empty 200) and to keep dashboards in sync after edits.
+app.use("/api", (_req, res, next) => {
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+  res.set("Pragma", "no-cache")
+  res.set("Expires", "0")
+  next()
+})
+
 app.get("/health", (_req, res) =>
   res.json({
     ok: true,

@@ -235,7 +235,7 @@ async function studentSummary(req, res) {
       sb
         .from("exam_submissions")
         .select(
-          "id,published_exam_id,status,total_score,max_score,submitted_at,started_at,updated_at,published_exam:published_exam_id(id,title,start_time,end_time,duration_minutes,total_marks,total_questions,category:categories(id,title))",
+          "id,published_exam_id,status,total_score,max_score,teacher_remarks,submitted_at,started_at,updated_at,published_exam:published_exam_id(id,title,start_time,end_time,duration_minutes,total_marks,total_questions,category:categories(id,title))",
         )
         .eq("student_id", req.user.id)
         .order("updated_at", { ascending: false })

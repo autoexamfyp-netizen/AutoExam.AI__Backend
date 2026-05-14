@@ -139,28 +139,54 @@ async function createExam(req, res) {
 async function getExam(req, res) {
   try {
     const { id } = req.params
-    const eRes = await req.supabase
+    if (!id) return res.status(400).json({ ok: false, error: "exam id required" })
+
+    // Try the rich embed first; fall back to a simpler select if the DB
+    // schema is missing the optional source_material_id FK (older installs).
+    let eRes = await req.supabase
       .from("exams")
       .select(SELECT_FULL)
       .eq("id", id)
-      .single()
-    if (eRes.error) return res.status(404).json({ error: eRes.error.message })
+      .maybeSingle()
+    if (eRes.error) {
+      console.warn("⚠️ getExam: SELECT_FULL failed, retrying without source FK:", eRes.error.message)
+      eRes = await req.supabase
+        .from("exams")
+        .select("*, category:categories(id,title)")
+        .eq("id", id)
+        .maybeSingle()
+    }
+    if (eRes.error) {
+      console.error("❌ getExam: select failed:", eRes.error)
+      return res.status(500).json({ ok: false, error: eRes.error.message })
+    }
+    if (!eRes.data) {
+      console.warn("⚠️ getExam: no row for id:", id, "user:", req.user?.id)
+      return res
+        .status(404)
+        .json({ ok: false, error: "Exam not found or you do not have access to it." })
+    }
 
     const linkRes = await req.supabase
       .from("exam_questions")
       .select("position, question:question_bank(*, category:categories(id,title))")
       .eq("exam_id", id)
       .order("position", { ascending: true })
-    if (linkRes.error) return res.status(500).json({ error: linkRes.error.message })
 
-    return res.json({
-      ok: true,
-      exam: eRes.data,
-      questions: (linkRes.data || []).map((r) => ({ ...r.question, position: r.position })),
-    })
+    let questions = []
+    if (linkRes.error) {
+      console.warn("⚠️ getExam: questions load failed:", linkRes.error.message)
+    } else {
+      questions = (linkRes.data || [])
+        .filter((r) => r.question) // drop orphans
+        .map((r) => ({ ...r.question, position: r.position }))
+    }
+
+    console.log("📄 getExam ok:", { id, questions: questions.length, owner: eRes.data.created_by })
+    return res.json({ ok: true, exam: eRes.data, questions })
   } catch (err) {
     console.error("❌ getExam crash:", err)
-    return res.status(500).json({ error: err?.message || "Fetch failed" })
+    return res.status(500).json({ ok: false, error: err?.message || "Fetch failed" })
   }
 }
 
