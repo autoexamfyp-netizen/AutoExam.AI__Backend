@@ -186,6 +186,7 @@ async function generateExam(req, res) {
       let q = req.supabase
         .from("question_bank")
         .select("id, prompt, question_type, difficulty, marks, topic, options, model_answer")
+        .eq("created_by", req.user.id)
         .order("created_at", { ascending: false })
         .limit(120)
       if (resolvedCategoryId) q = q.eq("category_id", resolvedCategoryId)

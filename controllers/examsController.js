@@ -25,6 +25,7 @@ async function listExams(req, res) {
     let q = req.supabase
       .from("exams")
       .select(SELECT_FULL)
+      .eq("created_by", req.user.id)
       .order("created_at", { ascending: false })
       .limit(Math.min(Number(limit) || 100, 500))
     if (categoryId === "__uncategorized__") q = q.is("category_id", null)
@@ -55,6 +56,7 @@ async function listExamsGrouped(req, res) {
     const { data, error } = await req.supabase
       .from("exams")
       .select(SELECT_FULL)
+      .eq("created_by", req.user.id)
       .order("created_at", { ascending: false })
       .limit(500)
     if (error) return res.status(500).json({ error: error.message })
@@ -99,6 +101,7 @@ async function createExam(req, res) {
     const qRes = await req.supabase
       .from("question_bank")
       .select("id, marks, difficulty")
+      .eq("created_by", req.user.id)
       .in("id", questionIds)
     if (qRes.error) return res.status(500).json({ error: qRes.error.message })
     const totalMarks = (qRes.data || []).reduce((s, r) => s + (Number(r.marks) || 0), 0)
@@ -147,6 +150,7 @@ async function getExam(req, res) {
       .from("exams")
       .select(SELECT_FULL)
       .eq("id", id)
+      .eq("created_by", req.user.id)
       .maybeSingle()
     if (eRes.error) {
       console.warn("⚠️ getExam: SELECT_FULL failed, retrying without source FK:", eRes.error.message)
@@ -154,6 +158,7 @@ async function getExam(req, res) {
         .from("exams")
         .select("*, category:categories(id,title)")
         .eq("id", id)
+        .eq("created_by", req.user.id)
         .maybeSingle()
     }
     if (eRes.error) {
@@ -211,6 +216,7 @@ async function updateExam(req, res) {
       .from("exams")
       .update(patch)
       .eq("id", id)
+      .eq("created_by", req.user.id)
       .select(SELECT_FULL)
       .single()
     if (error) return res.status(500).json({ error: error.message })
@@ -224,7 +230,11 @@ async function updateExam(req, res) {
 async function deleteExam(req, res) {
   try {
     const { id } = req.params
-    const { error } = await req.supabase.from("exams").delete().eq("id", id)
+    const { error } = await req.supabase
+      .from("exams")
+      .delete()
+      .eq("id", id)
+      .eq("created_by", req.user.id)
     if (error) return res.status(500).json({ error: error.message })
     return res.json({ ok: true })
   } catch (err) {
@@ -246,6 +256,7 @@ async function duplicateExam(req, res) {
       .from("exams")
       .select("*")
       .eq("id", id)
+      .eq("created_by", req.user.id)
       .single()
     if (srcRes.error) return res.status(404).json({ error: srcRes.error.message })
     const src = srcRes.data

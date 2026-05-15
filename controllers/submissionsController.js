@@ -1,22 +1,36 @@
 "use strict"
 
+const { teacherId, teacherPublishedExamIds } = require("../utils/teacherScope")
+
 /**
- * Teacher-facing submission review (RLS: only submissions linked to exams the
- * teacher published are visible).
+ * Teacher-facing submission review (RLS + explicit filter on teacher's published exams).
  */
 
 async function listSubmissions(req, res) {
   try {
     console.log("📥 Loading submissions...")
+    const uid = teacherId(req)
+    const pubIds = await teacherPublishedExamIds(req.supabase, uid)
+    if (!pubIds.length) {
+      console.log("✅ Submissions loaded: 0")
+      return res.json({ ok: true, submissions: [] })
+    }
+
     const { publishedExamId, status } = req.query
     let q = req.supabase
       .from("exam_submissions")
       .select(
         "id,status,started_at,submitted_at,time_taken_seconds,total_score,max_score,student_id,published_exam:published_exam_id(id,title,start_time,end_time)",
       )
+      .in("published_exam_id", pubIds)
       .order("submitted_at", { ascending: false, nullsFirst: false })
       .limit(500)
-    if (publishedExamId) q = q.eq("published_exam_id", publishedExamId)
+    if (publishedExamId) {
+      if (!pubIds.includes(publishedExamId)) {
+        return res.json({ ok: true, submissions: [] })
+      }
+      q = q.eq("published_exam_id", publishedExamId)
+    }
     if (status) q = q.eq("status", status)
     const { data, error } = await q
     if (error) {
@@ -33,6 +47,10 @@ async function listSubmissions(req, res) {
 
 async function getSubmission(req, res) {
   try {
+    const uid = teacherId(req)
+    const pubIds = await teacherPublishedExamIds(req.supabase, uid)
+    if (!pubIds.length) return res.status(404).json({ error: "Submission not found" })
+
     const { id } = req.params
     const subRes = await req.supabase
       .from("exam_submissions")
@@ -40,6 +58,7 @@ async function getSubmission(req, res) {
         "*, published_exam:published_exam_id(id,title,generated_exam_id,start_time,end_time,total_marks,duration_minutes)",
       )
       .eq("id", id)
+      .in("published_exam_id", pubIds)
       .single()
     if (subRes.error) return res.status(404).json({ error: subRes.error.message })
 
@@ -63,12 +82,21 @@ async function getSubmission(req, res) {
  */
 async function gradeSubmissionTeacher(req, res) {
   try {
+    const uid = teacherId(req)
+    const pubIds = await teacherPublishedExamIds(req.supabase, uid)
+    if (!pubIds.length) return res.status(404).json({ error: "Submission not found" })
+
     const { id } = req.params
     const { teacherRemarks, answers = [] } = req.body || {}
 
     console.log("📝 Reviewing student answers", { submissionId: id })
 
-    const subRes = await req.supabase.from("exam_submissions").select("*").eq("id", id).single()
+    const subRes = await req.supabase
+      .from("exam_submissions")
+      .select("*")
+      .eq("id", id)
+      .in("published_exam_id", pubIds)
+      .single()
     if (subRes.error) return res.status(404).json({ error: subRes.error.message })
 
     for (const a of answers) {
@@ -102,6 +130,7 @@ async function gradeSubmissionTeacher(req, res) {
         updated_at: new Date().toISOString(),
       })
       .eq("id", id)
+      .in("published_exam_id", pubIds)
       .select("*")
       .single()
     if (fin.error) return res.status(500).json({ error: fin.error.message })

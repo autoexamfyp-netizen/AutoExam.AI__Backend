@@ -26,6 +26,7 @@ async function listQuestions(req, res) {
     let q = req.supabase
       .from("question_bank")
       .select(SELECT)
+      .eq("created_by", req.user.id)
       .order("created_at", { ascending: false })
       .limit(Math.min(Number(limit) || 200, 500))
 
@@ -113,6 +114,7 @@ async function updateQuestion(req, res) {
       .from("question_bank")
       .update(patch)
       .eq("id", id)
+      .eq("created_by", req.user.id)
       .select(SELECT)
       .single()
     if (error) {
@@ -130,7 +132,11 @@ async function deleteQuestion(req, res) {
   try {
     const { id } = req.params
     if (!id) return res.status(400).json({ error: "id required" })
-    const { error } = await req.supabase.from("question_bank").delete().eq("id", id)
+    const { error } = await req.supabase
+      .from("question_bank")
+      .delete()
+      .eq("id", id)
+      .eq("created_by", req.user.id)
     if (error) {
       console.error("❌ deleteQuestion error:", error)
       return res.status(500).json({ error: error.message })

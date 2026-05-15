@@ -9,6 +9,7 @@ async function listPublished(req, res) {
     let q = req.supabase
       .from("published_exams")
       .select(SELECT_FULL)
+      .eq("published_by", req.user.id)
       .order("start_time", { ascending: false })
       .limit(200)
     if (activeOnly === "true") q = q.eq("is_active", true)
@@ -54,6 +55,7 @@ async function createPublished(req, res) {
       .from("exams")
       .select("id,title,description,category_id,total_questions,total_marks,duration_minutes")
       .eq("id", examId)
+      .eq("created_by", req.user.id)
       .single()
     if (ex.error || !ex.data) return res.status(404).json({ error: "Exam not found" })
 
@@ -115,6 +117,7 @@ async function updatePublished(req, res) {
       .from("published_exams")
       .update(patch)
       .eq("id", id)
+      .eq("published_by", req.user.id)
       .select(SELECT_FULL)
       .single()
     if (error) return res.status(500).json({ error: error.message })
@@ -128,7 +131,11 @@ async function updatePublished(req, res) {
 async function deletePublished(req, res) {
   try {
     const { id } = req.params
-    const { error } = await req.supabase.from("published_exams").delete().eq("id", id)
+    const { error } = await req.supabase
+      .from("published_exams")
+      .delete()
+      .eq("id", id)
+      .eq("published_by", req.user.id)
     if (error) return res.status(500).json({ error: error.message })
     return res.json({ ok: true })
   } catch (e) {

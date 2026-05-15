@@ -1,5 +1,7 @@
 "use strict"
 
+const { teacherId, teacherPublishedExamIds } = require("../utils/teacherScope")
+
 /**
  * Dashboard summary endpoint.
  *
@@ -20,7 +22,19 @@
 
 async function teacherSummary(req, res) {
   try {
+    const uid = teacherId(req)
     const sb = req.supabase
+    const pubIds = await teacherPublishedExamIds(sb, uid)
+
+    const scopeMaterials = (q) => q.eq("uploaded_by", uid)
+    const scopeText = (q) => q.eq("created_by", uid)
+    const scopeQuestions = (q) => q.eq("created_by", uid)
+    const scopeExams = (q) => q.eq("created_by", uid)
+    const scopePublished = (q) => q.eq("published_by", uid)
+    const scopeSubs = (q) => {
+      if (!pubIds.length) return q.eq("published_exam_id", "00000000-0000-0000-0000-000000000000")
+      return q.in("published_exam_id", pubIds)
+    }
 
     const safeCount = async (table, build = (q) => q) => {
       try {
@@ -43,23 +57,25 @@ async function teacherSummary(req, res) {
       pendingEvaluations,
       totalStudents,
     ] = await Promise.all([
-      safeCount("materials"),
-      safeCount("text_materials"),
-      safeCount("question_bank"),
-      safeCount("question_bank", (q) => q.eq("ai_generated", true)),
-      safeCount("exams"),
-      safeCount("published_exams"),
-      safeCount("exam_submissions"),
-      safeCount("exam_submissions", (q) => q.in("status", ["submitted", "late"])),
-      safeCount("students"),
+      safeCount("materials", scopeMaterials),
+      safeCount("text_materials", scopeText),
+      safeCount("question_bank", scopeQuestions),
+      safeCount("question_bank", (q) => scopeQuestions(q).eq("ai_generated", true)),
+      safeCount("exams", scopeExams),
+      safeCount("published_exams", scopePublished),
+      pubIds.length ? safeCount("exam_submissions", scopeSubs) : Promise.resolve(0),
+      pubIds.length
+        ? safeCount("exam_submissions", (q) => scopeSubs(q).in("status", ["submitted", "late"]))
+        : Promise.resolve(0),
+      Promise.resolve(0),
     ])
 
     const now = Date.now()
     let activePublishedExams = 0
     try {
-      const { data: pubs } = await sb
-        .from("published_exams")
-        .select("start_time,end_time,is_active")
+      const { data: pubs } = await scopePublished(
+        sb.from("published_exams").select("start_time,end_time,is_active"),
+      )
         .eq("is_active", true)
         .limit(500)
       for (const p of pubs || []) {
@@ -73,9 +89,11 @@ async function teacherSummary(req, res) {
 
     let studentsAttempted = 0
     try {
-      const { data: subsAttempt, error: saErr } = await sb.from("exam_submissions").select("student_id")
-      if (!saErr && subsAttempt?.length) {
-        studentsAttempted = new Set(subsAttempt.map((r) => r.student_id).filter(Boolean)).size
+      if (pubIds.length) {
+        const { data: subsAttempt, error: saErr } = await scopeSubs(sb.from("exam_submissions").select("student_id"))
+        if (!saErr && subsAttempt?.length) {
+          studentsAttempted = new Set(subsAttempt.map((r) => r.student_id).filter(Boolean)).size
+        }
       }
     } catch {
       studentsAttempted = 0
@@ -84,13 +102,42 @@ async function teacherSummary(req, res) {
     // Recent activity — pull a small slice from each source, mash, sort.
     const since = new Date(Date.now() - 1000 * 60 * 60 * 24 * 30).toISOString()
 
+    const recentSubsQuery =
+      pubIds.length > 0
+        ? scopeSubs(
+            sb
+              .from("exam_submissions")
+              .select("id,status,submitted_at,published_exam:published_exam_id(title)")
+              .gte("submitted_at", since)
+              .order("submitted_at", { ascending: false })
+              .limit(6),
+          )
+        : Promise.resolve({ data: [] })
+
     const [recentMaterials, recentText, recentQuestions, recentExams, recentPublished, recentSubs] = await Promise.all([
-      sb.from("materials").select("id,title,created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(6),
-      sb.from("text_materials").select("id,title,created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(6),
-      sb.from("question_bank").select("id,prompt,question_type,ai_generated,created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(6),
-      sb.from("exams").select("id,title,total_marks,created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(6),
-      sb.from("published_exams").select("id,title,created_at").gte("created_at", since).order("created_at", { ascending: false }).limit(6),
-      sb.from("exam_submissions").select("id,status,submitted_at,published_exam:published_exam_id(title)").gte("submitted_at", since).order("submitted_at", { ascending: false }).limit(6),
+      scopeMaterials(sb.from("materials").select("id,title,created_at"))
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(6),
+      scopeText(sb.from("text_materials").select("id,title,created_at"))
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(6),
+      scopeQuestions(
+        sb.from("question_bank").select("id,prompt,question_type,ai_generated,created_at"),
+      )
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(6),
+      scopeExams(sb.from("exams").select("id,title,total_marks,created_at"))
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(6),
+      scopePublished(sb.from("published_exams").select("id,title,created_at"))
+        .gte("created_at", since)
+        .order("created_at", { ascending: false })
+        .limit(6),
+      recentSubsQuery,
     ])
 
     const activity = []
@@ -127,9 +174,9 @@ async function teacherSummary(req, res) {
     activity.sort((a, b) => new Date(b.when).getTime() - new Date(a.when).getTime())
 
     // Analytics — aggregate question_bank by type / difficulty / topic.
-    const allQ = await sb
-      .from("question_bank")
-      .select("question_type,difficulty,topic,ai_generated,created_at")
+    const allQ = await scopeQuestions(
+      sb.from("question_bank").select("question_type,difficulty,topic,ai_generated,created_at"),
+    )
       .order("created_at", { ascending: false })
       .limit(500)
 
@@ -145,9 +192,7 @@ async function teacherSummary(req, res) {
 
     // Exams created per week — last 8 weeks.
     const examWeekBuckets = {}
-    const allExams = await sb
-      .from("exams")
-      .select("created_at")
+    const allExams = await scopeExams(sb.from("exams").select("created_at"))
       .order("created_at", { ascending: true })
       .limit(500)
     for (const e of allExams.data || []) {
