@@ -46,15 +46,14 @@ function normalizeQuestions(raw, opts = {}) {
         }
         if (unique.length >= 4) break
       }
-      if (unique.length < 2) continue
-      options = unique
+      if (unique.length < 4) continue
+      options = unique.slice(0, 4)
     }
 
     let answer = trimStr(q.correct_answer || q.model_answer, 4000)
     if (type === "mcq" && options) {
       const matched = options.find((o) => o.toLowerCase() === answer.toLowerCase())
-      if (matched) answer = matched
-      else if (!answer) answer = options[0]
+      answer = matched || options[0]
     }
 
     const difficulty = DIFFS.has(q.difficulty) ? q.difficulty : opts.defaultDifficulty || "medium"
