@@ -12,7 +12,7 @@ const { teacherId, teacherPublishedExamIds } = require("../utils/teacherScope")
  *     stats: { totalMaterials, totalTextMaterials, totalQuestions, totalAiQuestions,
  *              totalExams, pendingEvaluations, totalStudents },
  *     activity: [...],
- *     analytics: { byType, byDifficulty, byTopic, examsTrend }
+ *     analytics: { byType, byDifficulty }
  *   }
  *
  * NOTE: "Total Students" and "Pending Evaluations" depend on tables that aren't
@@ -59,8 +59,8 @@ async function teacherSummary(req, res) {
     ] = await Promise.all([
       safeCount("materials", scopeMaterials),
       safeCount("text_materials", scopeText),
-      safeCount("question_bank", scopeQuestions),
-      safeCount("question_bank", (q) => scopeQuestions(q).eq("ai_generated", true)),
+      safeCount("question_bank", (q) => scopeQuestions(q).eq("in_bank", true)),
+      safeCount("question_bank", (q) => scopeQuestions(q).eq("in_bank", true).eq("ai_generated", true)),
       safeCount("exams", scopeExams),
       safeCount("published_exams", scopePublished),
       pubIds.length ? safeCount("exam_submissions", scopeSubs) : Promise.resolve(0),
@@ -175,37 +175,17 @@ async function teacherSummary(req, res) {
 
     // Analytics — aggregate question_bank by type / difficulty / topic.
     const allQ = await scopeQuestions(
-      sb.from("question_bank").select("question_type,difficulty,topic,ai_generated,created_at"),
+      sb.from("question_bank").select("question_type,difficulty,ai_generated,created_at"),
     )
       .order("created_at", { ascending: false })
       .limit(500)
 
     const byType = { mcq: 0, short: 0, essay: 0 }
     const byDifficulty = { easy: 0, medium: 0, hard: 0 }
-    const byTopic = {}
     for (const q of allQ.data || []) {
       if (q.question_type in byType) byType[q.question_type]++
       if (q.difficulty in byDifficulty) byDifficulty[q.difficulty]++
-      const t = (q.topic || "Uncategorized").trim()
-      byTopic[t] = (byTopic[t] || 0) + 1
     }
-
-    // Exams created per week — last 8 weeks.
-    const examWeekBuckets = {}
-    const allExams = await scopeExams(sb.from("exams").select("created_at"))
-      .order("created_at", { ascending: true })
-      .limit(500)
-    for (const e of allExams.data || []) {
-      const d = new Date(e.created_at)
-      const weekStart = new Date(d)
-      weekStart.setDate(d.getDate() - d.getDay())
-      const key = weekStart.toISOString().slice(0, 10)
-      examWeekBuckets[key] = (examWeekBuckets[key] || 0) + 1
-    }
-    const examsTrend = Object.entries(examWeekBuckets)
-      .sort(([a], [b]) => (a < b ? -1 : 1))
-      .slice(-8)
-      .map(([weekStart, count]) => ({ label: weekStart.slice(5), count }))
 
     return res.json({
       ok: true,
@@ -235,11 +215,6 @@ async function teacherSummary(req, res) {
           { name: "Medium", value: byDifficulty.medium },
           { name: "Hard", value: byDifficulty.hard },
         ],
-        byTopic: Object.entries(byTopic)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 6)
-          .map(([name, value]) => ({ name, value })),
-        examsTrend,
       },
     })
   } catch (err) {

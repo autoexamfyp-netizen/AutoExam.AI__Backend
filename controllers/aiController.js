@@ -71,6 +71,7 @@ async function generateQuestions(req, res) {
         created_by: req.user.id,
         category_id: categoryId || null,
         text_material_id: textMaterialId || null,
+        in_bank: true,
       }))
       console.log("💾 Saving generated questions", { count: rows.length })
       const { data, error } = await req.supabase.from("question_bank").insert(rows).select("*")
@@ -109,9 +110,12 @@ async function generateExam(req, res) {
     } = req.body || {}
 
     const cfg = {
-      targetMcq: Number(examConfig.targetMcq ?? 5),
-      targetShort: Number(examConfig.targetShort ?? 3),
-      targetEssay: Number(examConfig.targetEssay ?? 1),
+      targetMcq: Number(examConfig.targetMcq ?? 0),
+      targetShort: Number(examConfig.targetShort ?? 0),
+      targetEssay: Number(examConfig.targetEssay ?? 0),
+      marksMcq: Number(examConfig.marksMcq ?? 2),
+      marksShort: Number(examConfig.marksShort ?? 4),
+      marksEssay: Number(examConfig.marksEssay ?? 10),
       difficulty: examConfig.difficulty || "mixed",
       title,
     }
@@ -138,8 +142,11 @@ async function generateExam(req, res) {
       resolvedSourceMaterialId = matRes.data.id
       if (!resolvedCategoryId) resolvedCategoryId = matRes.data.category_id
       if (!resolvedCategoryTitle) resolvedCategoryTitle = matRes.data.category?.title
-      if (!resolvedTitle || resolvedTitle === "AI-composed exam") {
-        resolvedTitle = `${matRes.data.title || "Untitled"} — Exam`
+      const teacherTitle = String(title || "").trim()
+      if (!teacherTitle) {
+        resolvedTitle = `${matRes.data.title || "Untitled"} - Exam`
+      } else {
+        resolvedTitle = teacherTitle
       }
     }
 
@@ -158,22 +165,28 @@ async function generateExam(req, res) {
           short: cfg.targetShort,
           essay: cfg.targetEssay,
           difficulty: cfg.difficulty === "mixed" ? "medium" : cfg.difficulty,
-          marksMcq: 2,
-          marksShort: 4,
-          marksEssay: 10,
+          marksMcq: cfg.marksMcq,
+          marksShort: cfg.marksShort,
+          marksEssay: cfg.marksEssay,
         },
       })
       const { text } = await callGemini(prompt)
       const parsed = safeParseJson(text)
-      const questions = normalizeQuestions(parsed, { defaultDifficulty: "medium" })
-      if (!questions.length) {
-        return res.status(502).json({ error: "Gemini returned no usable questions for the exam." })
+      const defaultDiff = cfg.difficulty === "mixed" ? "medium" : cfg.difficulty
+      const normalized = normalizeQuestions(parsed, { defaultDifficulty: defaultDiff })
+      const questions = pickQuestionsForExamMix(normalized, cfg)
+      if (!questions || !questions.length) {
+        const needed = cfg.targetMcq + cfg.targetShort + cfg.targetEssay
+        return res.status(502).json({
+          error: `Could not produce ${needed} questions matching your requested mix. Try again or adjust counts.`,
+        })
       }
       const rows = questions.map((q) => ({
         ...q,
         created_by: req.user.id,
         category_id: resolvedCategoryId || null,
         text_material_id: resolvedSourceMaterialId || null,
+        in_bank: false,
       }))
       const ins = await req.supabase.from("question_bank").insert(rows).select("*")
       if (ins.error) {
@@ -236,16 +249,7 @@ async function generateExam(req, res) {
     }
 
     const totalMarks = questionRows.reduce((sum, r) => sum + (Number(r.marks) || 0), 0)
-
-    // Compute representative difficulty (most common in the chosen set).
-    const diffCounts = {}
-    for (const r of questionRows) {
-      const k = r.difficulty || "medium"
-      diffCounts[k] = (diffCounts[k] || 0) + 1
-    }
-    const sortedDiffs = Object.entries(diffCounts).sort((a, b) => b[1] - a[1])
-    const distinct = Object.keys(diffCounts).length
-    const representativeDifficulty = distinct > 1 ? "mixed" : sortedDiffs[0]?.[0] || "medium"
+    const examDifficulty = cfg.difficulty || "mixed"
 
     const ins = await req.supabase
       .from("exams")
@@ -257,7 +261,7 @@ async function generateExam(req, res) {
         description: description || null,
         duration_minutes: Number(durationMinutes) || 60,
         total_marks: totalMarks,
-        difficulty: representativeDifficulty,
+        difficulty: examDifficulty,
         status: "draft",
       })
       .select("*")
@@ -295,6 +299,36 @@ async function generateExam(req, res) {
 
 function countType(all, idList, type) {
   return idList.reduce((n, id) => n + (all.find((c) => c.id === id)?.question_type === type ? 1 : 0), 0)
+}
+
+/** Trim AI output to exact counts and apply per-type marks from teacher config. */
+function pickQuestionsForExamMix(questions, cfg) {
+  const targets = {
+    mcq: Math.max(0, Number(cfg.targetMcq) || 0),
+    short: Math.max(0, Number(cfg.targetShort) || 0),
+    essay: Math.max(0, Number(cfg.targetEssay) || 0),
+  }
+  const marksByType = {
+    mcq: Math.max(1, Number(cfg.marksMcq) || 2),
+    short: Math.max(1, Number(cfg.marksShort) || 4),
+    essay: Math.max(1, Number(cfg.marksEssay) || 10),
+  }
+  const buckets = { mcq: [], short: [], essay: [] }
+  for (const q of questions) {
+    const t = q.question_type === "mcq" ? "mcq" : q.question_type === "essay" ? "essay" : "short"
+    buckets[t].push(q)
+  }
+
+  const out = []
+  for (const type of ["mcq", "short", "essay"]) {
+    const need = targets[type]
+    const pool = buckets[type]
+    if (pool.length < need) return null
+    for (let i = 0; i < need; i++) {
+      out.push({ ...pool[i], question_type: type, marks: marksByType[type] })
+    }
+  }
+  return out
 }
 
 module.exports = { generateQuestions, generateExam }
